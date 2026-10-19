@@ -1,91 +1,32 @@
 //! 北大空间 API 客户端
+//!
+//! 教室列表 / 已占用时段 / 我的预约按 2026-10 改版后的站点实现（`/space`、`/space/lockStatus`、
+//! `/space/schedule`、`/classRoom`）。查询学生、提交和取消仍是旧版流程，尚未在新站点上验证。
 
 use crate::client::BDKJ_BASE;
+use crate::parse::{self, Application, BookedSlot, Building, Room, StudentInfo, PROFILE_MSG};
 use anyhow::{anyhow, Context, Result};
-use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
-/// 教学楼 ID（从页面硬编码拿到）
-pub const BUILDING_ERJIAO: &str = "924128798427975680"; // 二教
-pub const BUILDING_SIJIAO: &str = "924128697978589184"; // 四教
-pub const BUILDING_DIXUE: &str = "924129024664539136"; // 地学
+const XHR_ACCEPT: &str = "application/json, text/javascript, */*; q=0.01";
 
-/// 根据名字解析教学楼 ID
-pub fn building_id(name: &str) -> Option<&'static str> {
-    match name {
-        "二教" | "erjiao" | "02" => Some(BUILDING_ERJIAO),
-        "四教" | "sijiao" | "04" => Some(BUILDING_SIJIAO),
-        "地学" | "dixue" | "09" => Some(BUILDING_DIXUE),
-        _ => None,
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct Room {
-    pub id: String,
-    #[serde(default)]
-    pub code: String,
-    pub name: String,
-    #[serde(default)]
-    pub popularity: String,
-    #[serde(rename = "seatingCapacity", default)]
-    pub seating_capacity: String,
-    #[serde(default)]
-    pub bookable: bool,
-    #[serde(default)]
-    pub locked: i32,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct HistoryTime {
-    pub id: String,
-    #[serde(rename = "beginTime")]
-    pub begin_time: String,
-    #[serde(rename = "endTime")]
-    pub end_time: String,
-    #[serde(default)]
-    pub intervals: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct SearchStudentResp {
-    pub success: bool,
-    #[serde(default)]
-    pub message: String,
-    pub data: Option<StudentInfo>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct StudentInfo {
-    pub id: String,
-    pub serial: String,
-    pub name: String,
-    #[serde(default)]
-    pub college: Option<String>,
-    #[serde(rename = "mobilePhone", default)]
-    pub mobile_phone: Option<String>,
-    #[serde(default)]
-    pub email: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct Participant {
     pub student_id: String,
     pub serial: String,
     pub name: String,
 }
 
-/// 一条已有的预约申请（从 /classRoom 页面抽取）
-#[derive(Debug, Clone, Serialize)]
-pub struct Application {
-    pub id: String,
-    pub room_name: String,
-    pub status: String,
-    pub applicant: String,
-    pub apply_time: String,
-    pub begin_end: String,
-    pub reason: String,
-    pub participants: Vec<String>,
-    pub can_cancel: bool,
+#[derive(Debug)]
+pub struct SubmitResult {
+    pub success: bool,
+    pub message: String,
+}
+
+/// 一次请求跟随重定向后的结果
+struct Page {
+    url: String,
+    body: String,
 }
 
 pub struct BdkjApi {
@@ -97,82 +38,100 @@ impl BdkjApi {
         Self { http }
     }
 
-    /// 按教学楼列出可预约的教室
-    pub async fn list_rooms(&self, building_id: &str) -> Result<Vec<Room>> {
-        let resp = self
-            .http
-            .post(format!("{BDKJ_BASE}/room/classRoom"))
-            .header("x-requested-with", "XMLHttpRequest")
-            .header("accept", "application/json, text/javascript, */*; q=0.01")
-            .form(&[
-                ("buildingId", building_id),
-                ("roomId", ""),
-                ("beginTime", ""),
-                ("endTime", ""),
-            ])
+    /// 发送请求并做统一检查：HTTP 错误、会话失效、被重定向到「个人信息」页
+    async fn send(&self, req: reqwest::RequestBuilder, what: &str) -> Result<Page> {
+        let resp = req
             .send()
             .await
-            .context("列出教室请求失败")?;
+            .with_context(|| format!("{what}请求失败"))?;
         let status = resp.status();
-        let body = resp.text().await?;
-        if !status.is_success() {
-            return Err(anyhow!("列出教室 HTTP {status}: {body}"));
+        let url = resp.url().to_string();
+        let body = resp
+            .text()
+            .await
+            .with_context(|| format!("读取{what}响应失败"))?;
+        if parse::is_logged_out(status.as_u16(), &url, &body) {
+            return Err(anyhow!("北大空间会话已失效，请重新运行 `bdkj login`"));
         }
-        let rooms: Vec<Room> =
-            serde_json::from_str(&body).with_context(|| format!("解析教室列表失败: {body}"))?;
-        Ok(rooms)
+        if parse::is_profile_page(&url) {
+            return Err(anyhow!(PROFILE_MSG));
+        }
+        if !status.is_success() {
+            return Err(anyhow!("{what} HTTP {status}"));
+        }
+        Ok(Page { url, body })
     }
 
-    /// 查询指定教室已被预约的时间段
-    pub async fn history_time(&self, room_id: &str, start_date: &str) -> Result<Vec<HistoryTime>> {
-        let resp = self
-            .http
-            .post(format!(
-                "{BDKJ_BASE}/classRoom/historyTime?id=&roomId={room_id}"
-            ))
+    fn xhr(&self, path: &str) -> reqwest::RequestBuilder {
+        self.http
+            .get(format!("{BDKJ_BASE}{path}"))
             .header("x-requested-with", "XMLHttpRequest")
-            .header("accept", "application/json, text/javascript, */*; q=0.01")
-            .form(&[("startDate", start_date)])
-            .send()
-            .await
-            .context("查询已预约时段请求失败")?;
-        let status = resp.status();
-        let body = resp.text().await?;
-        if !status.is_success() {
-            return Err(anyhow!("historyTime HTTP {status}: {body}"));
+            .header("accept", XHR_ACCEPT)
+            .header("referer", format!("{BDKJ_BASE}/space"))
+    }
+
+    /// `GET /space`：教学楼 + 教室卡片
+    pub async fn space(&self) -> Result<(Vec<Building>, Vec<Room>)> {
+        let page = self
+            .send(self.http.get(format!("{BDKJ_BASE}/space")), "教室列表")
+            .await?;
+        let (buildings, rooms) = parse::parse_space(&page.body);
+        if buildings.is_empty() && rooms.is_empty() {
+            return Err(anyhow!("没有从北大空间读到教室列表（页面结构可能又改了）"));
         }
-        let list: Vec<HistoryTime> =
-            serde_json::from_str(&body).with_context(|| format!("解析历史时段失败: {body}"))?;
-        Ok(list)
+        Ok((buildings, rooms))
+    }
+
+    /// `GET /space/lockStatus`：`{ roomId: 0|1|2 }`，仅供参考（含义未验证）
+    pub async fn lock_status(&self) -> Result<BTreeMap<String, i64>> {
+        let page = self.send(self.xhr("/space/lockStatus"), "门锁状态").await?;
+        Ok(parse::parse_lock_status(&page.body))
+    }
+
+    /// `GET /space/schedule`：教室从 `start_date`（`YYYY-MM-DD`）起一周内已被占用的时段
+    pub async fn schedule(&self, room_id: &str, start_date: &str) -> Result<Vec<BookedSlot>> {
+        let req = self
+            .xhr("/space/schedule")
+            .query(&[("roomId", room_id), ("startDate", start_date)]);
+        let page = self.send(req, "已预约时段").await?;
+        parse::parse_schedule(&page.body)
+    }
+
+    /// 像浏览器一样打开教室的「去申请」页面；资料不完整时会被重定向到 /personal
+    pub async fn check_can_apply(&self, apply_href: Option<&str>) -> Result<()> {
+        let Some(href) = apply_href else {
+            return Ok(());
+        };
+        let url = if href.starts_with("http://") || href.starts_with("https://") {
+            if !href.contains("://bdkj.pku.edu.cn/") {
+                return Ok(());
+            }
+            href.to_string()
+        } else if href.starts_with('/') {
+            format!("{BDKJ_BASE}{href}")
+        } else {
+            format!("{BDKJ_BASE}/{href}")
+        };
+        let req = self
+            .http
+            .get(url)
+            .header("referer", format!("{BDKJ_BASE}/space"));
+        self.send(req, "申请页").await.map(|_| ())
     }
 
     /// 根据学号+姓名查询学生信息
     pub async fn search_student(&self, serial: &str, name: &str) -> Result<StudentInfo> {
-        let resp = self
+        let req = self
             .http
             .post(format!("{BDKJ_BASE}/classRoom/seachStudent"))
             .header("x-requested-with", "XMLHttpRequest")
-            .header("accept", "application/json, text/javascript, */*; q=0.01")
-            .form(&[("serial", serial), ("name", name)])
-            .send()
-            .await
-            .context("查询学生请求失败")?;
-        let status = resp.status();
-        let body = resp.text().await?;
-        if !status.is_success() {
-            return Err(anyhow!("seachStudent HTTP {status}: {body}"));
-        }
-        let parsed: SearchStudentResp =
-            serde_json::from_str(&body).with_context(|| format!("解析学生信息失败: {body}"))?;
-        if !parsed.success {
-            return Err(anyhow!("seachStudent 失败: {}", parsed.message));
-        }
-        parsed
-            .data
-            .ok_or_else(|| anyhow!("seachStudent 返回 data 为空"))
+            .header("accept", XHR_ACCEPT)
+            .form(&[("serial", serial), ("name", name)]);
+        let page = self.send(req, "查询学生").await?;
+        parse::parse_student(&page.body).with_context(|| format!("参与人 {serial} {name} 校验失败"))
     }
 
-    /// 提交预约
+    /// 提交预约（旧版流程，未在 2026 新站点上验证）
     ///
     /// `begin_time` / `end_time` 格式 `YYYY-MM-DD HH:MM:SS`
     pub async fn submit_apply(
@@ -183,7 +142,7 @@ impl BdkjApi {
         reason: &str,
         participants: &[Participant],
     ) -> Result<SubmitResult> {
-        // 表单字段与浏览器 step4 提交完全一致
+        // 表单字段与旧版浏览器 step4 提交完全一致
         let mut form: Vec<(String, String)> = vec![
             ("id".into(), "".into()),
             ("beginTime".into(), begin_time.into()),
@@ -200,193 +159,46 @@ impl BdkjApi {
             form.push((format!("students[{i}].sort"), i.to_string()));
         }
 
-        let resp = self
+        let req = self
             .http
             .post(format!("{BDKJ_BASE}/classRoom/handle/submit"))
             .header("referer", format!("{BDKJ_BASE}/classRoom/apply"))
-            .form(&form)
-            .send()
-            .await
-            .context("提交预约请求失败")?;
-        let status = resp.status();
-        let final_url = resp.url().clone();
-        let body = resp.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("submit HTTP {status}: {body}"));
-        }
-        // 成功：服务器 302 → /classRoom（列表页包含 `申请成功`/`申请已取消` 等状态）
-        // 失败：停在 /classRoom/apply，同时页面里有一条 layer.msg(...) 展示报错
-        let path = final_url.path();
-        let landed_on_list = path == "/classRoom" || path.ends_with("/classRoom");
-        if landed_on_list {
-            return Ok(SubmitResult {
-                success: true,
-                message: "预约提交成功".into(),
-                landed_url: final_url.to_string(),
-            });
-        }
-        let msg = extract_layer_msg(&body).unwrap_or_else(|| format!("未知返回: path={path}"));
-        Ok(SubmitResult {
-            success: false,
-            message: msg,
-            landed_url: final_url.to_string(),
-        })
+            .form(&form);
+        // send() 已把 /personal 重定向转成 PROFILE_MSG 错误
+        let page = self.send(req, "提交预约").await?;
+        let (success, message) = parse::submit_outcome(&page.url, &page.body)?;
+        Ok(SubmitResult { success, message })
     }
 
-    /// 取消预约
-    pub async fn cancel_apply(&self, apply_id: &str) -> Result<()> {
-        let resp = self
+    /// 取消预约，并以申请列表确认（页面上的 layer.msg 不足为凭）
+    pub async fn cancel_apply(&self, apply_id: &str) -> Result<Option<Application>> {
+        let req = self
             .http
-            .get(format!("{BDKJ_BASE}/classRoom/cancelApply/{apply_id}"))
-            .send()
-            .await
-            .context("取消预约请求失败")?;
-        let status = resp.status();
-        let body = resp.text().await?;
-        if !status.is_success() {
-            return Err(anyhow!("cancelApply HTTP {status}: {body}"));
-        }
-        if let Some(msg) = extract_layer_msg(&body) {
-            if !msg.contains("成功") && !msg.contains("取消成功") {
-                return Err(anyhow!("cancelApply 返回: {msg}"));
+            .get(format!("{BDKJ_BASE}/classRoom/cancelApply/{apply_id}"));
+        let page = self.send(req, "取消预约").await?;
+        let msg = parse::extract_layer_msg(&page.body);
+        let list = if page.body.contains(r#"id="results""#) {
+            parse::parse_applications(&page.body)
+        } else {
+            self.list_applications().await?
+        };
+        let after = list.into_iter().find(|a| a.id == apply_id);
+        if let Some(a) = &after {
+            if a.can_cancel && a.status != "申请已取消" {
+                return Err(anyhow!(
+                    "取消没有生效{}",
+                    msg.map(|m| format!("：{m}")).unwrap_or_default()
+                ));
             }
         }
-        Ok(())
+        Ok(after)
     }
 
-    /// 拉取 /classRoom 主页面并抽取申请列表
+    /// 拉取 /classRoom 页面并抽取申请列表
     pub async fn list_applications(&self) -> Result<Vec<Application>> {
-        let resp = self
-            .http
-            .get(format!("{BDKJ_BASE}/classRoom"))
-            .send()
-            .await
-            .context("获取 classRoom 页面失败")?;
-        let status = resp.status();
-        let body = resp.text().await?;
-        if !status.is_success() {
-            return Err(anyhow!("classRoom HTTP {status}"));
-        }
-        Ok(parse_applications(&body))
+        let page = self
+            .send(self.http.get(format!("{BDKJ_BASE}/classRoom")), "预约记录")
+            .await?;
+        Ok(parse::parse_applications(&page.body))
     }
-}
-
-#[derive(Debug)]
-pub struct SubmitResult {
-    pub success: bool,
-    pub message: String,
-    pub landed_url: String,
-}
-
-/// 从 HTML 中抠出 `layer.msg("...")` 的文字
-fn extract_layer_msg(html: &str) -> Option<String> {
-    let re = regex::Regex::new(r#"layer\.msg\(["']([^"']+)["']"#).ok()?;
-    re.captures(html)
-        .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
-}
-
-/// 解析 /classRoom 页面中的申请列表
-///
-/// 页面结构：`<div id="results"> <div class="row">…每条申请…</div> </div>`
-fn parse_applications(html: &str) -> Vec<Application> {
-    use scraper::{Html, Selector};
-    let doc = Html::parse_document(html);
-    let row_sel = Selector::parse("div#results > div.row").expect("static selector");
-    let h5_sel = Selector::parse("h5").expect("static selector");
-
-    let cancel_re = regex::Regex::new(r"/classRoom/cancelApply/(\d+)").expect("static regex");
-    let begin_end_re = regex::Regex::new(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}\s*-\s*\d{2}:\d{2})")
-        .expect("static regex");
-    let apply_time_re =
-        regex::Regex::new(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})").expect("static regex");
-    let applicant_re = regex::Regex::new(r"([^\s]+)\s+申请$").expect("static regex");
-    let reason_re =
-        regex::Regex::new(r"(?s)fa-comment-dots[^<]*</em>\s*([^<]+)").expect("static regex");
-    let status_re = regex::Regex::new(r#"(?s)color-red"><strong>([^<]+)"#).expect("static regex");
-
-    let mut out = Vec::new();
-    for node in doc.select(&row_sel) {
-        let html_s = node.html();
-        let text = node.text().collect::<Vec<_>>().join(" ");
-        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-
-        let id = cancel_re
-            .captures(&html_s)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_default();
-        let can_cancel = !id.is_empty();
-
-        let room_name = node
-            .select(&h5_sel)
-            .next()
-            .map(|n| n.text().collect::<String>().trim().to_string())
-            .unwrap_or_default();
-        if room_name.is_empty() {
-            continue;
-        }
-
-        let status_raw = status_re
-            .captures(&html_s)
-            .and_then(|c| c.get(1).map(|m| m.as_str().trim().to_string()))
-            .unwrap_or_default();
-        let status = if status_raw.contains("申请成功") {
-            "申请成功".into()
-        } else if status_raw.contains("已取消") {
-            "申请已取消".into()
-        } else if status_raw.contains("已结束") {
-            "已结束".into()
-        } else if !status_raw.is_empty() {
-            status_raw
-        } else {
-            "未知".into()
-        };
-
-        let apply_time = apply_time_re
-            .captures(&text)
-            .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
-            .unwrap_or_default();
-        let begin_end = begin_end_re
-            .captures(&text)
-            .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
-            .unwrap_or_default();
-        // 申请人在 "xxx 申请 <time>" 的前面
-        let applicant = text
-            .split_once(&apply_time)
-            .map(|(prefix, _)| {
-                applicant_re
-                    .captures(prefix.trim_end())
-                    .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
-                    .unwrap_or_default()
-            })
-            .unwrap_or_default();
-        let reason = reason_re
-            .captures(&html_s)
-            .and_then(|c| c.get(1).map(|m| m.as_str().trim().to_string()))
-            .unwrap_or_default();
-
-        // 参与人列表：文本形如 "张三[ 未签到 ] 李四[ ... ]"
-        let participants = text
-            .split(']')
-            .filter_map(|seg| {
-                seg.rsplit_once('[')
-                    .map(|(left, _)| left.trim().to_string())
-            })
-            .filter(|n| !n.is_empty() && n != "申请")
-            .collect::<Vec<_>>();
-
-        out.push(Application {
-            id,
-            room_name,
-            status,
-            applicant,
-            apply_time,
-            begin_end,
-            reason,
-            participants,
-            can_cancel,
-        });
-    }
-    out
 }

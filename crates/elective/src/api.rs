@@ -478,7 +478,7 @@ fn parse_supplement_table(dom: &Html, page: usize) -> Result<Vec<SupplementCours
 /// 从分页控件解析总页数
 fn parse_total_pages(dom: &Html) -> usize {
     let sel = Selector::parse("tr[align='right'] > td").expect("static selector");
-    let re = regex::Regex::new(r"Page\s*\d+?\s*of\s*(\d+?)").expect("static regex");
+    let re = regex::Regex::new(r"Page\s*\d+\s*of\s*(\d+)").expect("static regex");
     for td in dom.select(&sel) {
         let text = td.text().collect::<String>();
         if let Some(caps) = re.captures(&text) {
@@ -488,4 +488,27 @@ fn parse_total_pages(dom: &Html) -> usize {
         }
     }
     1 // 默认 1 页
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pager(text: &str) -> Html {
+        Html::parse_document(&format!(
+            r#"<table><tr align="right"><td>{text}</td></tr></table>"#
+        ))
+    }
+
+    #[test]
+    fn total_pages_multi_digit() {
+        assert_eq!(parse_total_pages(&pager("Page 1 of 12")), 12);
+        assert_eq!(parse_total_pages(&pager("Page 10 of 105 首页 上一页")), 105);
+        assert_eq!(parse_total_pages(&pager("Page 1 of 3")), 3);
+    }
+
+    #[test]
+    fn total_pages_default_one() {
+        assert_eq!(parse_total_pages(&pager("无分页")), 1);
+    }
 }

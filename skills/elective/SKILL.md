@@ -11,7 +11,7 @@ A CLI client for PKU's course selection system with auto-enrollment automation.
 ## Architecture
 
 - **Crate location**: `crates/elective/`
-- **Auth flow**: IAAA SSO (`app_id="elective"`) → elective SSO endpoint callback
+- **Auth flow**: IAAA SSO (`app_id="syllabus"`, redirect `http://elective.pku.edu.cn:80/elective2008/ssoLogin.do`) → elective SSO endpoint callback
 - **API**: HTML scraping + CAPTCHA handling (base64 image recognition)
 - **Automation**: Polling loop for auto-enrollment with configurable interval
 

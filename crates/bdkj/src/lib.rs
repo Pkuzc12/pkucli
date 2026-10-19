@@ -2,7 +2,7 @@
 //!
 //! 覆盖完整预约流程：
 //! - IAAA 登录（appID=bdkj）
-//! - 列出教学楼下的教室 / 教室已被预约时段
+//! - 列出教学楼下的教室（`/space`）/ 教室空闲节次（`/space/schedule`）
 //! - 查询学生信息
 //! - 提交预约 / 取消预约
 //! - 列出个人申请记录
@@ -13,6 +13,7 @@ pub mod commands;
 mod display;
 pub mod groups;
 pub mod login;
+pub mod parse;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -43,16 +44,26 @@ pub enum Commands {
     /// 退出登录
     Logout,
 
-    /// 列出教学楼下的教室（二教 / 四教 / 地学）
+    /// 列出研讨教室（二教 / 四教 / 地学），含容量、起约人数、门/屏幕状态
     Rooms {
-        /// 教学楼名：二教、四教、地学
-        building: String,
+        /// 教学楼：二教、四教、地学（或楼号 02 / 04 / 09）；不填列出全部
+        building: Option<String>,
+        /// 只显示可容纳至少这么多人的教室
+        #[arg(long)]
+        min_capacity: Option<u32>,
     },
 
-    /// 查询某教室已被预约的时段
-    History {
-        /// 教室 ID
+    /// 查询教室每天的空闲节次与已被预约的时段（每天 13 节，08:00–22:30，每节 50 分钟）
+    #[command(alias = "history", alias = "free")]
+    Schedule {
+        /// 教室 ID（可用 `bdkj rooms` 查询）
         room_id: String,
+        /// 起始日期 `YYYY-MM-DD`，默认今天
+        #[arg(long)]
+        date: Option<String>,
+        /// 查询天数（1–7），默认 1
+        #[arg(long, default_value_t = 1)]
+        days: u32,
     },
 
     /// 查询学生信息（会触发 /classRoom/seachStudent）
@@ -67,15 +78,18 @@ pub enum Commands {
     #[command(alias = "ls")]
     List,
 
-    /// 提交一次教室预约
+    /// 提交一次教室预约（最多连续 2 节，至少 3 人且不少于教室起约人数）
+    ///
+    /// 注意：提交步骤沿用旧版流程，尚未在 2026 改版后的站点上验证。
+    /// 首次预约前需在 https://bdkj.pku.edu.cn/personal 完善个人信息。
     Reserve {
         /// 教室 ID（可用 `bdkj rooms 二教` 查询）
         #[arg(long)]
         room_id: String,
-        /// 起始时间，格式 `YYYY-MM-DD HH:MM:SS`
+        /// 起始时间，格式 `YYYY-MM-DD HH:MM[:SS]`（用 `bdkj schedule` 返回的节次时间）
         #[arg(long)]
         begin: String,
-        /// 结束时间，格式 `YYYY-MM-DD HH:MM:SS`
+        /// 结束时间，格式 `YYYY-MM-DD HH:MM[:SS]`
         #[arg(long)]
         end: String,
         /// 预约事由
@@ -155,8 +169,15 @@ pub async fn dispatch(command: Commands) -> Result<()> {
         }
         Commands::Status => login::status()?,
         Commands::Logout => login::logout()?,
-        Commands::Rooms { building } => commands::cmd_rooms(&building).await?,
-        Commands::History { room_id } => commands::cmd_history(&room_id).await?,
+        Commands::Rooms {
+            building,
+            min_capacity,
+        } => commands::cmd_rooms(building.as_deref(), min_capacity).await?,
+        Commands::Schedule {
+            room_id,
+            date,
+            days,
+        } => commands::cmd_schedule(&room_id, date.as_deref(), days).await?,
         Commands::Student { serial, name } => commands::cmd_search_student(&serial, &name).await?,
         Commands::List => commands::cmd_list().await?,
         Commands::Reserve {

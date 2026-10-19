@@ -40,6 +40,8 @@ cargo run --bin info-auth -- check     # check all session status
 cargo run --bin info-auth -- status    # check keyring status
 cargo run --bin bdkj -- login -p
 cargo run --bin bdkj -- list           # list classroom reservations
+cargo run --bin bdkj -- rooms 二教      # discussion rooms (from /space)
+cargo run --bin bdkj -- schedule <room_id> --days 3   # free periods
 cargo run --bin portal -- free-classroom 一教 --day today
 cargo run --bin portal -- netfee status
 
@@ -98,11 +100,18 @@ cwfw (bin)                 PKU 财务综合信息门户 CLI (cwfw.pku.edu.cn / W
     Features: 个人酬金查询 etc.
 
 bdkj (bin)                 北大空间 — 学术研讨教室预约 (bdkj.pku.edu.cn)
-    Uses: common for IAAA (app_id=bdkj) → /login/oauth callback → JWTUser/SESSION cookies
-    API: mixed JSON (/room/classRoom, /classRoom/seachStudent, /classRoom/historyTime) +
-         HTML form steps (/classRoom/applyStep, /classRoom/handle/submit) +
-         GET cancel (/classRoom/cancelApply/<id>). HTML listing scraped with `scraper`
-         from `div#results > div.row`.
+    Uses: common for IAAA (app_id=bdkj) → GET /login/oauth?_rand=…&token=… → 302 /home,
+          `SESSION` cookie. Site redesigned 2026-10: `/personal/user` is 404 for everyone, so a
+          valid session = final URL not on /oauth, /login* (except /login/oauth) or IAAA.
+    API (2026 site): rooms scraped from `GET /space` (`[data-building-id]` panels,
+         `div.sp-card[data-room-id]` cards); `GET /space/lockStatus` (XHR, `{roomId: 0|1|2}`,
+         informative); `GET /space/schedule?roomId=&startDate=` (XHR, taken slots for the
+         week; 13 periods/day 08:00–22:30, max 2 consecutive); `GET /classRoom` HTML list
+         (`div#results`, or `div.cr-empty` 暂无申请记录). Old `/room/classRoom` and
+         `/classRoom/historyTime` are gone. Student check (/classRoom/seachStudent), submit
+         (/classRoom/handle/submit) and cancel (/classRoom/cancelApply/<id>) are the old flow,
+         unverified on the new site; an incomplete profile redirects to /personal (surfaced as
+         a 「个人信息」 error). All parsing is pure functions in `parse.rs` with unit tests.
     Participant groups persisted to `~/.config/info/bdkj/groups.json` so users can
     save a fixed roster (e.g. `bdkj group set phy3 -p 学号:姓名 ...`) and reuse with
     `bdkj reserve --group phy3 ...`. `--group` and `--participant` are mutually exclusive.
@@ -116,7 +125,7 @@ claspider (bin)            PKU 课程信息爬取（教务部 + 选课网）— 
 portal (bin)               PKU 校内信息门户 CLI (portal.pku.edu.cn)
     Auth: independent username/password + CAPTCHA (does NOT use IAAA)
     Features: `portal free-classroom <楼>` — 空闲教室查询
-              `portal calendar` — 校历显示
+              `portal calendar` — 校历显示（simso Vue bundle 解析，兼容 webpack 与 2026 Vite 构建）
               `portal netfee status/recharge/watch` — 网费查询/充值/低余额监控
     CAPTCHA: uses `common::captcha` (Utool default, configurable)
     Config: ~/.config/info/portal/ (follows common Store convention)
@@ -133,9 +142,9 @@ pku-cli (bin meta)         Meta crate that re-exports the per-service binaries s
 - treehole: `app_id="PKU Helper"`, redirect to `/chapi/cas_iaaa_login`
 - course: `app_id="blackboard"`, redirect to Blackboard SSO endpoint
 - campuscard: `app_id="portal2017"`, redirect to portal → berserker-auth → JWT
-- elective: `app_id="elective"`, redirect to elective SSO endpoint
+- elective: `app_id="syllabus"`, redirect to `http://elective.pku.edu.cn:80/elective2008/ssoLogin.do`
 - cwfw: `app_id="IIPF"`, redirect to `cwfw.pku.edu.cn/WFManager/home2.jsp` (then 2 more bootstrap hops)
-- bdkj: `app_id="bdkj"`, redirect to `http://bdkj.pku.edu.cn/login/oauth`
+- bdkj: `app_id="bdkj"`, redirect to `https://bdkj.pku.edu.cn/login/oauth`
 
 After IAAA returns a token, each crate has its own `complete_*_login()` that exchanges the token with the target service and saves session+cookies.
 

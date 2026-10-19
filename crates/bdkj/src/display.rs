@@ -1,46 +1,74 @@
 //! 终端渲染
 
-use crate::api::{Application, HistoryTime, Room};
+use crate::parse::{Application, DaySlots, Room};
 use colored::Colorize;
+use std::collections::BTreeMap;
 
-pub fn render_rooms(building: &str, rooms: &[Room]) {
+fn opt(n: Option<u32>) -> String {
+    n.map(|v| v.to_string()).unwrap_or_else(|| "-".into())
+}
+
+fn or_dash(s: &str) -> &str {
+    if s.is_empty() {
+        "-"
+    } else {
+        s
+    }
+}
+
+pub fn render_rooms(title: &str, rooms: &[Room], locks: &BTreeMap<String, i64>) {
     println!(
-        "{} {} 下共 {} 间教室",
+        "{} {} 共 {} 间研讨教室",
         "●".green(),
-        building.bold(),
+        title.bold(),
         rooms.len()
     );
     println!(
-        "  {:<22} {:<10} {:<8} {:<8} {:<8} 锁",
-        "ID", "名称", "容量", "热度", "可约"
+        "  {:<20} {:<6} {:<8} {:<6} {:<4} {:<6} {:<6} {:<6} 锁",
+        "ID", "楼", "教室", "编号", "层", "容量", "起约", "门"
     );
     for r in rooms {
-        let bookable = if r.bookable {
-            "是".green()
-        } else {
-            "否".red()
-        };
+        let lock = locks
+            .get(&r.id)
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".into());
         println!(
-            "  {:<22} {:<10} {:<8} {:<8} {:<8} {}",
+            "  {:<20} {:<6} {:<8} {:<6} {:<4} {:<6} {:<6} {:<6} {}",
             r.id,
-            r.name,
-            r.seating_capacity,
-            format!("{}%", r.popularity),
-            bookable,
-            r.locked
+            or_dash(&r.building),
+            r.name.bold(),
+            or_dash(&r.code),
+            opt(r.floor),
+            opt(r.capacity),
+            opt(r.min_people),
+            or_dash(&r.door),
+            lock
         );
     }
 }
 
-pub fn render_history(room: &str, list: &[HistoryTime]) {
+pub fn render_schedule(room: &str, days: &[DaySlots]) {
     println!(
-        "{} 教室 {} 已被预约时段（{} 条）",
+        "{} 教室 {} 空闲节次（每节 50 分钟，一次最多连续 2 节）",
         "●".green(),
-        room.bold(),
-        list.len()
+        room.bold()
     );
-    for h in list {
-        println!("  {} ~ {}  ({})", h.begin_time, h.end_time, h.intervals);
+    for d in days {
+        println!("  {}", d.date.bold().cyan());
+        if d.free.is_empty() {
+            println!("    空闲：{}", "无".red());
+        } else {
+            let free = d
+                .free
+                .iter()
+                .map(|p| format!("第{}节 {}-{}", p.period, p.begin, p.end))
+                .collect::<Vec<_>>()
+                .join("  ");
+            println!("    空闲：{}", free.green());
+        }
+        for t in &d.taken {
+            println!("    {} {} ~ {}", "已占用".yellow(), t.begin, t.end);
+        }
     }
 }
 

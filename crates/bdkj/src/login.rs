@@ -2,10 +2,12 @@
 //!
 //! 完整流程：
 //! 1. IAAA 登录（appID=bdkj）→ 获得 iaaa_token
-//! 2. GET `/login/oauth?token=<iaaa_token>` → 建立 JWTUser / SESSION / rememberMe cookies
-//! 3. GET `/personal/user` 校验会话
+//! 2. GET `/login/oauth?_rand=…&token=<iaaa_token>` → 302 → `/home`，种下 `SESSION` cookie
+//! 3. 以最终落点校验会话：没有回到 `/oauth`、`/login*`（回调本身除外）或 IAAA 即为成功
+//!    （2026 改版后 `/personal/user` 对所有人都是 404，不能再用来校验）
 
 use crate::client::{self, BDKJ_BASE};
+use crate::parse;
 use anyhow::{anyhow, Context, Result};
 use colored::Colorize;
 use pkuinfo_common::{
@@ -17,7 +19,7 @@ use pkuinfo_common::{
 pub const APP_NAME: &str = "bdkj";
 
 const IAAA_APP_ID: &str = "bdkj";
-const IAAA_REDIRECT: &str = "http://bdkj.pku.edu.cn/login/oauth";
+const IAAA_REDIRECT: &str = "https://bdkj.pku.edu.cn/login/oauth";
 
 fn iaaa_config() -> IaaaConfig {
     IaaaConfig {
@@ -71,37 +73,25 @@ async fn complete_bdkj_login(store: &Store, iaaa_token: &str, username: &str) ->
     let cookie_store = store.load_cookie_store()?;
     let client = client::build(cookie_store.clone())?;
 
-    // /login/oauth?token=<iaaa_token> 服务器校验 token 并种下 JWTUser / SESSION cookies
-    let callback_url = format!("{BDKJ_BASE}/login/oauth?token={iaaa_token}");
+    // 与 IAAA 自己的跳转一致：/login/oauth?_rand=…&token=… → 302 → /home
+    let rand = format!("0.{}", chrono::Utc::now().timestamp_subsec_nanos());
     let resp = client
-        .get(&callback_url)
+        .get(format!("{BDKJ_BASE}/login/oauth"))
+        .query(&[("_rand", rand.as_str()), ("token", iaaa_token)])
         .send()
         .await
         .context("北大空间 oauth 回调失败")?;
     let status = resp.status();
-    let body = resp.text().await?;
-    if !status.is_success() {
+    let final_url = resp.url().to_string();
+    let body = resp.text().await.context("读取 oauth 回调响应失败")?;
+    if status.is_client_error() || status.is_server_error() {
         return Err(anyhow!("oauth 回调 HTTP {status}"));
     }
-    if body.contains("iaaa.pku.edu.cn") && body.contains("oauth.jsp") {
-        return Err(anyhow!("北大空间拒绝 IAAA token，请重新登录"));
+    if parse::is_logged_out(status.as_u16(), &final_url, &body) {
+        return Err(anyhow!("北大空间拒绝了 IAAA token，请重新登录"));
     }
 
-    // 校验会话：/personal/user 返回当前用户 JSON
-    let user_resp = client
-        .get(format!("{BDKJ_BASE}/personal/user"))
-        .header("x-requested-with", "XMLHttpRequest")
-        .header("accept", "application/json, text/javascript, */*; q=0.01")
-        .send()
-        .await
-        .context("校验会话失败")?;
-    let user_status = user_resp.status();
-    let user_body = user_resp.text().await?;
-    if !user_status.is_success() {
-        return Err(anyhow!("/personal/user HTTP {user_status}: {user_body}"));
-    }
-
-    // JWTUser cookie 里带了 account、id、tenant_id
+    // 旧版 JWTUser cookie 里带了 account；新版可能没有，此时回退到登录用户名
     let uid_from_cookie = extract_account_from_cookies(&cookie_store);
     let uid = if !username.is_empty() {
         username.to_string()

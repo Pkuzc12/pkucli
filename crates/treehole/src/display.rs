@@ -167,7 +167,8 @@ pub fn print_hole_detail(h: &Hole, comments: &[Comment], total: Option<i64>) {
     println!();
 
     // 分割线
-    let total_count = total.unwrap_or(comments.len() as i64);
+    let shown = comments.len() as i64;
+    let total_count = total.unwrap_or(shown).max(h.reply).max(shown);
     println!(
         "{}",
         format!("── 评论 ({total_count}) ──────────────────────").dimmed()
@@ -176,6 +177,12 @@ pub fn print_hole_detail(h: &Hole, comments: &[Comment], total: Option<i64>) {
 
     for c in comments {
         print_comment(c);
+    }
+    if shown < total_count {
+        println!(
+            "{}",
+            format!("... 仅显示 {shown} / {total_count} 条评论").dimmed()
+        );
     }
 }
 

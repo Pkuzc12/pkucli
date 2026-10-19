@@ -133,7 +133,7 @@ Error codes:
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/hole/list_comments?page=1&limit=10&comment_limit=10&comment_stream=1` | List holes with comments (main feed) |
-| GET | `/hole/one?pid=<pid>&comment_stream=1` | Get single hole with all comments |
+| GET | `/hole/one?pid=<pid>&comment_stream=1` | Get single hole with its first 10 comments (page the rest via `/comment/list`) |
 | GET | `/hole/list?page=1&limit=10` | List holes (simple) |
 | GET | `/hole/my_list?page=1&limit=10` | List my holes |
 | GET | `/hole/ta_list` | List a user's holes |
@@ -153,7 +153,7 @@ Error codes:
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/comment/list?pid=<pid>&page=1&limit=30` | List comments for a hole |
+| GET | `/comment/list?pid=<pid>&page=1&limit=50&sort=0&comment_stream=1` | List comments for a hole, oldest first; data `{ list: [comment…] }` (web app: `getReplyList`) |
 | GET | `/comment/get` | Get single comment |
 | POST | `/comment/post` | Post a comment |
 | POST | `/comment/good` | Mark comment as good/reward |

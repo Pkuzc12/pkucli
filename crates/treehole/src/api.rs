@@ -8,6 +8,9 @@ use reqwest::Client;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 const APP_NAME: &str = "treehole";
+/// comment/list 每页条数（网页版用 10）与单次读取的最多页数
+const COMMENT_PAGE: u32 = 50;
+const COMMENT_PAGES: u32 = 10;
 
 // ─── 通用响应结构 ───────────────────────────────────────────────
 
@@ -556,11 +559,39 @@ impl TreeholeApi {
     }
 
     /// 获取单个帖子详情（含全部评论）
+    ///
+    /// hole/one 只带前 10 条评论；评论更多时按网页版的做法（getReplyList）
+    /// 翻页拉取 comment/list，最多 COMMENT_PAGES 页。
     pub async fn get_hole(&self, pid: i64) -> Result<HoleWithComments> {
         let data: serde_json::Value = self
             .get(&format!("/hole/one?pid={pid}&comment_stream=1"))
             .await?;
-        parse_hole_with_comments(&data)
+        let mut detail = parse_hole_with_comments(&data)?;
+        if (detail.list.len() as i64) < detail.hole.reply {
+            let mut all = Vec::new();
+            for page in 1..=COMMENT_PAGES {
+                let batch = self.list_comments(pid, page, COMMENT_PAGE).await?;
+                let done = batch.len() < COMMENT_PAGE as usize;
+                all.extend(batch);
+                if done {
+                    break;
+                }
+            }
+            if all.len() > detail.list.len() {
+                detail.list = all;
+            }
+        }
+        Ok(detail)
+    }
+
+    /// 获取帖子评论的一页（按时间正序）
+    pub async fn list_comments(&self, pid: i64, page: u32, limit: u32) -> Result<Vec<Comment>> {
+        let data: serde_json::Value = self
+            .get(&format!(
+                "/comment/list?pid={pid}&page={page}&limit={limit}&sort=0&comment_stream=1"
+            ))
+            .await?;
+        Ok(parse_comments(&data, "list"))
     }
 
     /// 获取我的帖子

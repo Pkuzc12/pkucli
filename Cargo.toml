@@ -59,4 +59,13 @@ incremental = true
 
 [profile.dev.package."*"]
 debug = false
+opt-level = 1
+
+# Build scripts and proc-macros: no debug info (they are never debugged, only run).
+[profile.dev.build-override]
+debug = false
+
+[profile.release.build-override]
 opt-level = 0
+codegen-units = 256
+debug = false

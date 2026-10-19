@@ -4,6 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build Commands
 
+Linking uses mold via clang (`.cargo/config.toml`; delete its target table if mold/clang are missing). Dev builds compile dependencies at opt-level 1 without debug info and build scripts without debug info, which keeps `target/` around 2 GB. `cargo trim` (alias) drops dev/check artifacts and keeps release binaries.
+
 ```bash
 # Build entire workspace
 cargo build --release

@@ -262,9 +262,48 @@ pub fn default_salary_fields(from: u32, to: u32) -> Vec<(String, String)> {
     f
 }
 
+/// `only` 不匹配时的错误：列出全部可用代码，调用方（或 agent）据此自我纠正
+pub fn unknown_salary_kind(code: &str, all: &[(String, String)]) -> String {
+    let list = all
+        .iter()
+        .map(|(c, t)| format!("{c} {t}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "没有代码为 {code} 的工资查询功能。可用：{list}（只能用 `cwfw gz --list` 或上一次结果里的代码，不传则查全部）"
+    )
+}
+
+/// 收入类型的查询顺序：页面默认值（联动 check 的结果）在前，其余下拉选项在后；
+/// 没有默认值时用第一个选项。两者都没有 → 空。
+pub fn income_type_order(
+    default: Option<String>,
+    options: &[(String, String)],
+) -> Vec<(String, String)> {
+    let default = default
+        .filter(|v| !v.is_empty())
+        .or_else(|| options.first().map(|(c, _)| c.clone()));
+    let Some(d) = default else {
+        return Vec::new();
+    };
+    let label = options
+        .iter()
+        .find(|(c, _)| *c == d)
+        .map(|(_, t)| t.clone())
+        .unwrap_or_default();
+    let mut out = vec![(d.clone(), label)];
+    out.extend(options.iter().filter(|(c, _)| *c != d).cloned());
+    out
+}
+
 /// 个人工资查询（学生账号为 奖助学金 / 生活物价补贴 等按月发放的款项）
 ///
 /// `only` 为查询功能代码（如 "6"），None = 账号可见的全部功能。
+///
+/// 联动字段（funcMap check）从随请求发送的 userContext 里读表单（`WF_CWBS$5574-D.FUNCNO` 等），
+/// 而不是 check_data：只带基础 context 时服务端沿用会话里残留的值，新会话直接返回 `error`，
+/// 于是收入类型为空、查询存储过程报“收入类型不能为空”。所以每个 check 都带上已填好的表单。
+/// 收入类型是随查询功能变化的下拉框（bindMap），默认值即其 check 结果；逐个选项查询（默认在前）。
 pub async fn salary(
     wf: &Wf,
     base: &UserContext,
@@ -276,52 +315,81 @@ pub async fn salary(
     const WIN: &str = "5609";
     const FORM: &str = "5574";
     const GRID: &str = "6160";
+    const NODE: u32 = 219;
     let def = wf.load_window(WIN).await?;
-    let mut options = field_options(wf, &def, "d.funcno", &[], base).await?;
-    if let Some(code) = only {
-        options.retain(|(c, _)| c == code);
-        if options.is_empty() {
-            return Err(anyhow!(
-                "没有代码为 {code} 的工资查询功能（用 `cwfw gz --list` 查看）"
-            ));
-        }
+    let all = field_options(wf, &def, "d.funcno", &[], base).await?;
+    if all.is_empty() {
+        return Err(anyhow!("这个账号在财务门户里没有可查询的工资/奖助学金项目"));
+    }
+    let options: Vec<_> = match only {
+        Some(code) => all
+            .iter()
+            .filter(|(c, _)| c == code.trim())
+            .cloned()
+            .collect(),
+        None => all.clone(),
+    };
+    if let (Some(code), true) = (only, options.is_empty()) {
+        return Err(anyhow!(unknown_salary_kind(code, &all)));
     }
     let q = FormQuery {
         winno: WIN,
         form_func: FORM,
         first_param: "5574-d.year",
-        menu_node: 219,
+        menu_node: NODE,
         with_check: false,
     };
+    let at = |form: &[(&str, String)]| query_ctx(base, FORM, NODE, form);
     let mut out = Vec::new();
     for (code, title) in options {
-        let mut form: Vec<(&str, String)> = vec![("d.funcno", code.clone())];
-        // 联动字段：收入类型 → 代码/库 → 发布方式
-        for f in ["d.incometype", "d.code", "d.dbcode", "d.pubdate"] {
-            let v = resolve_field(wf, &def, f, &form, base)
-                .await?
-                .unwrap_or_default();
-            form.push((f, v));
+        let head: Vec<(&str, String)> = vec![("d.funcno", code.clone())];
+        let types = field_options(wf, &def, "d.incometype", &head, &at(&head)).await?;
+        let default = resolve_field(wf, &def, "d.incometype", &head, &at(&head)).await?;
+        let income_types = income_type_order(default, &types);
+        if income_types.is_empty() {
+            if only.is_some() {
+                return Err(anyhow!("财务门户没有给“{title}”返回收入类型，请稍后重试"));
+            }
+            continue; // 其他查询功能照常
         }
-        form.push(("d.year", year.to_string()));
-        form.push(("d.month_1", pad2(from)));
-        form.push(("d.month_2", pad2(to)));
-        // 表格窗口的 beforeLoad 存储过程（前端打开窗口时先跑一次），失败不致命
-        if let Some(b) = wf::before_load_proc(&def) {
-            let args = wf::build_args(&b.params, &form, base);
-            let _ = wf.button(&b.hash, &args, None, base).await;
+        let several = income_types.len() > 1;
+        for (income_type, type_title) in income_types {
+            let mut form = head.clone();
+            form.push(("d.incometype", income_type));
+            // 联动字段：收入类型 → 代码/库 → 发布方式（每个都看得到前面的字段）
+            for f in ["d.code", "d.dbcode", "d.pubdate"] {
+                let v = resolve_field(wf, &def, f, &form, &at(&form))
+                    .await?
+                    .unwrap_or_default();
+                form.push((f, v));
+            }
+            form.push(("d.year", year.to_string()));
+            form.push(("d.month_1", pad2(from)));
+            form.push(("d.month_2", pad2(to)));
+            // 表格窗口的 beforeLoad 存储过程（前端打开窗口时先跑一次），失败不致命
+            if let Some(b) = wf::before_load_proc(&def) {
+                let args = wf::build_args(&b.params, &form, base);
+                let _ = wf.button(&b.hash, &args, None, &at(&form)).await;
+            }
+            let ctx = q.run(wf, base, Some(&def), &form).await?;
+            let fields = match wf.cross_fields(GRID, &ctx).await {
+                Ok(f) if f.iter().any(|(k, _)| k.starts_with("mon")) => f,
+                _ => default_salary_fields(from, to),
+            };
+            let resp = wf.do_query(GRID, "qq.ord ASC", 10000, None).await?;
+            out.push(SalarySection {
+                code: code.clone(),
+                title: if several && !type_title.is_empty() {
+                    format!("{title} · {type_title}")
+                } else {
+                    title.clone()
+                },
+                items: salary_items(&resp, &fields),
+            });
         }
-        let ctx = q.run(wf, base, Some(&def), &form).await?;
-        let fields = match wf.cross_fields(GRID, &ctx).await {
-            Ok(f) if f.iter().any(|(k, _)| k.starts_with("mon")) => f,
-            _ => default_salary_fields(from, to),
-        };
-        let resp = wf.do_query(GRID, "qq.ord ASC", 10000, None).await?;
-        out.push(SalarySection {
-            code,
-            title,
-            items: salary_items(&resp, &fields),
-        });
+    }
+    if out.is_empty() {
+        return Err(anyhow!("财务门户没有返回收入类型，请稍后重试"));
     }
     Ok(out)
 }
@@ -813,6 +881,40 @@ mod tests {
     }
 
     #[test]
+    fn income_type_default_first() {
+        let opts = vec![
+            ("A".to_string(), "工资".to_string()),
+            ("B".to_string(), "奖学金".to_string()),
+        ];
+        let o = income_type_order(Some("B".into()), &opts);
+        assert_eq!(
+            o.iter().map(|(c, _)| c.as_str()).collect::<Vec<_>>(),
+            ["B", "A"]
+        );
+        assert_eq!(o[0].1, "奖学金");
+        // check 返回 error（None）或空 → 第一个选项
+        assert_eq!(income_type_order(None, &opts)[0].0, "A");
+        assert_eq!(income_type_order(Some(String::new()), &opts)[0].0, "A");
+        // 下拉框为空时仍用 check 的结果
+        assert_eq!(
+            income_type_order(Some("B".into()), &[]),
+            vec![("B".to_string(), String::new())]
+        );
+        assert!(income_type_order(None, &[]).is_empty());
+    }
+
+    #[test]
+    fn unknown_kind_lists_codes() {
+        let all = vec![
+            ("6".to_string(), "奖学金类".to_string()),
+            ("7".to_string(), "生活补贴".to_string()),
+        ];
+        let e = unknown_salary_kind("01", &all);
+        assert!(e.contains("没有代码为 01"));
+        assert!(e.contains("可用：6 奖学金类, 7 生活补贴"));
+    }
+
+    #[test]
     fn salary_cross_table() {
         // 合成数据：奖学金 9/10 月各一笔
         let raw = r#"{total:1,page:1,records:0,rows:[{id:"6160_0",cell:["&#30740;&#31350;&#29983;&#22870;&#23398;&#37329;","","","","","","","","","1200","800","2000","9","&#26222;&#36890;&#23383;&#27573;","A01","A01","2000000000"]}]}"#;
@@ -887,7 +989,9 @@ mod tests {
 
     #[test]
     fn reimburse_local() {
-        let local = wf::parse_local("pass;local(0-tks_amt:0;0-tks_count:0;0-BX_YBXALL_count:2;0-BX_YBXALL_amt:350.5;0-BX_YBXSPZ_count:1;0-BX_YBXSPZ_amt:200;0-BX_DTD_COUNT:1;0-BX_DTD_AMOUT:150.5;0-PZ_50_PT_amt:99999;)");
+        let local = wf::parse_local(
+            "pass;local(0-tks_amt:0;0-tks_count:0;0-BX_YBXALL_count:2;0-BX_YBXALL_amt:350.5;0-BX_YBXSPZ_count:1;0-BX_YBXSPZ_amt:200;0-BX_DTD_COUNT:1;0-BX_DTD_AMOUT:150.5;0-PZ_50_PT_amt:99999;)",
+        );
         let s = reimburse_stats(&local);
         let all = s.iter().find(|x| x.key == "BX_YBXALL").expect("all");
         assert_eq!((all.count, all.amount), (Some(2.0), Some(350.5)));

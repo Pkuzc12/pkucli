@@ -37,6 +37,19 @@ impl UserContext {
         self.inner.insert(key, value);
     }
 
+    pub fn get(&self, key: &str) -> Option<&Value> {
+        self.inner.get(key)
+    }
+
+    /// 字符串形式取值（数字也转成字符串；缺失为空串）。
+    pub fn get_str(&self, key: &str) -> String {
+        match self.inner.get(key) {
+            Some(Value::String(s)) => s.clone(),
+            Some(Value::Null) | None => String::new(),
+            Some(v) => v.to_string(),
+        }
+    }
+
     pub fn to_json_string(&self) -> String {
         Value::Object(self.inner.clone()).to_string()
     }
@@ -52,8 +65,13 @@ impl Default for UserContext {
 ///
 /// 需要已建立了 JSESSIONID 的 cookie jar 客户端。
 pub async fn fetch_user_context(client: &Client) -> Result<UserContext> {
+    fetch_user_context_at(client, "WF_CWBS").await
+}
+
+/// 同 [`fetch_user_context`]，但针对任意子系统路径（如智能报销的 `YBX`）。
+pub async fn fetch_user_context_at(client: &Client, path: &str) -> Result<UserContext> {
     let resp = client
-        .post(format!("{CWFW_BASE}/WF_CWBS/loadRolesMenu.action"))
+        .post(format!("{CWFW_BASE}/{path}/loadRolesMenu.action"))
         .header("x-requested-with", "XMLHttpRequest")
         .send()
         .await
@@ -65,10 +83,15 @@ pub async fn fetch_user_context(client: &Client) -> Result<UserContext> {
         return Err(anyhow!("loadRolesMenu HTTP {status}"));
     }
 
+    parse_user_context(&text)
+}
+
+/// 从 loadRolesMenu.action 的 HTML 中解析 userContext（纯函数，便于测试）。
+pub fn parse_user_context(text: &str) -> Result<UserContext> {
     // 响应 HTML 里有一个 <input id="userContext" value="[{_@key_@:_@value_@,...}]" />
     let re = Regex::new(r#"id="userContext"[^>]*value="(\[\{[^"]*\}\])""#).expect("静态正则");
     let caps = re
-        .captures(&text)
+        .captures(text)
         .ok_or_else(|| anyhow!("loadRolesMenu 响应中未找到 userContext"))?;
     let raw = caps[1].to_string();
 
@@ -77,8 +100,9 @@ pub async fn fetch_user_context(client: &Client) -> Result<UserContext> {
     // 尾部可能出现 `,}]` 这种 trailing comma，需要清掉
     let cleaned = strip_trailing_commas(&restored);
 
-    let parsed: Vec<Map<String, Value>> = serde_json::from_str(&cleaned)
-        .with_context(|| format!("解析 userContext 失败: {cleaned}"))?;
+    // 注意：错误信息里不回显 userContext 内容（含姓名等个人信息）
+    let parsed: Vec<Map<String, Value>> =
+        serde_json::from_str(&cleaned).context("解析 userContext 失败")?;
     let first = parsed
         .into_iter()
         .next()

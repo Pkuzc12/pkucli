@@ -19,6 +19,7 @@ cargo build --release --bin elective
 cargo build --release --bin info-auth
 cargo build --release --bin cwfw
 cargo build --release --bin bdkj
+cargo build --release --bin cwpay
 
 # Note: the bin name `course` exists in BOTH `pku-course` and `pku-cli`.
 # When running, disambiguate with `-p`: `cargo run -p pku-course --bin course -- ...`
@@ -53,7 +54,7 @@ cargo test --workspace
 
 ## Architecture
 
-12 crates in a Cargo workspace. One shared library (`common`), one meta install bundle (`pku-cli`), the rest are CLI binaries against PKU services.
+13 crates in a Cargo workspace. One shared library (`common`), one meta install bundle (`pku-cli`), the rest are CLI binaries against PKU services.
 
 ```
 common (pkuinfo-common, lib)    Shared: IAAA auth, OTP, session/cookie persistence, QR, credential resolution, captcha, TLS
@@ -99,7 +100,17 @@ elective (bin)             PKU Course Selection (elective.pku.edu.cn) CLI
 cwfw (bin)                 PKU 财务综合信息门户 CLI (cwfw.pku.edu.cn / WF_CWBS)
     Uses: common for IAAA (app_id=IIPF) → home2.jsp → findpages_postData.action → home3.jsp
           → WF_CWBS subsystem entry. Multi-step session bootstrap is essential.
-    Features: 个人酬金查询 etc.
+    Features (read-only): cj 个人酬金, gz 个人工资/奖助学金, rk 我的入卡, bx 智能报销概览 (YBX
+          subsystem via `login::enter_subsystem`), jk 借款, wh 外汇到款, hl 汇率, xc 薪酬劳务, menu.
+    Protocol: generic Wingsoft layer in `wf.rs` (loadDefinition → per-session proc hash →
+          responseButtonEvent with form fields in userContext → doQuery); flows in `queries.rs`.
+
+cwpay (bin)                北京大学收费平台 (cwpay.pku.edu.cn, "收费大厅") — read-only
+    Uses: common for IAAA (app_id from public `getIAAALoginParam`, now CWSF) → GET /dealcas?token=…
+          → 302 `/#/middle_page?token=<X-Token>`; every API call `/api/<path>` + `X-Token` header.
+          Responses AES-256-ECB encrypted (crypto.rs); messageCode -3 = renewed token (replay).
+    Features: tuition, pending, orders, order <no> (+ e-invoice link), spending, projects, notice, me.
+    All parsing in `parse.rs` / `crypto.rs` with unit tests on synthetic fixtures (`fixtures/`).
 
 bdkj (bin)                 北大空间 — 学术研讨教室预约 (bdkj.pku.edu.cn)
     Uses: common for IAAA (app_id=bdkj) → GET /login/oauth?_rand=…&token=… → 302 /home,
@@ -147,6 +158,7 @@ pku-cli (bin meta)         Meta crate that re-exports the per-service binaries s
 - elective: `app_id="syllabus"`, redirect to `http://elective.pku.edu.cn:80/elective2008/ssoLogin.do`
 - cwfw: `app_id="IIPF"`, redirect to `cwfw.pku.edu.cn/WFManager/home2.jsp` (then 2 more bootstrap hops)
 - bdkj: `app_id="bdkj"`, redirect to `https://bdkj.pku.edu.cn/login/oauth`
+- cwpay: `app_id="CWSF"`, redirect to `http://cwpay.pku.edu.cn/dealcas` (X-Token from the dealcas redirect)
 
 After IAAA returns a token, each crate has its own `complete_*_login()` that exchanges the token with the target service and saves session+cookies.
 

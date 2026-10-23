@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn roundtrip_ascii() {
-        for s in ["_search", "false", "50", "WF_CWBS", "2200011523"] {
+        for s in ["_search", "false", "50", "WF_CWBS", "2000000000"] {
             let encrypted = encrypt(s);
             assert_eq!(decrypt_for_test(&encrypted).as_deref(), Some(s));
         }

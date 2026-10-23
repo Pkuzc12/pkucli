@@ -1,8 +1,10 @@
 //! 北大财务综合信息门户 CLI 客户端
 //!
-//! 目前实现了：
+//! 目前实现了（全部只读）：
 //! - IAAA 登录（app_id = `IIPF`）
-//! - 账务查询 → 收入查询 → 个人酬金查询
+//! - 网上查询(WF_CWBS)：菜单、个人酬金、个人工资（奖助学金）、我的入卡、借款、外汇到款、
+//!   汇率、薪酬劳务
+//! - 智能报销(YBX)：报销单状态概览
 
 pub mod api;
 mod client;
@@ -11,6 +13,8 @@ pub mod context;
 mod display;
 pub mod encrypt;
 pub mod login;
+pub mod queries;
+pub mod wf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -56,6 +60,131 @@ pub enum Commands {
         /// 结束月份 (1-12)，默认当前月
         #[arg(short, long)]
         to: Option<u32>,
+    },
+
+    /// 列出当前账号"网上查询"里可见的菜单（窗口号）
+    Menu {
+        /// 输出 JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// 个人工资查询（学生为奖助学金、生活补贴等按月发放的款项）
+    #[command(alias = "salary")]
+    Gz {
+        /// 年份，默认当前年
+        #[arg(short, long)]
+        year: Option<u32>,
+        /// 起始月份 (1-12)，默认 1
+        #[arg(short, long)]
+        from: Option<u32>,
+        /// 结束月份 (1-12)，默认当前月（往年为 12）
+        #[arg(short, long)]
+        to: Option<u32>,
+        /// 只查某个查询功能（代码，见 --list）
+        #[arg(short, long)]
+        kind: Option<String>,
+        /// 列出可用的查询功能
+        #[arg(long)]
+        list: bool,
+        /// 输出 JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// 我的入卡：发放到本人银行卡的款项（谁给我打了钱）
+    #[command(alias = "deposits")]
+    Rk {
+        /// 起始日期 YYYY-MM-DD，默认今年 1 月 1 日
+        #[arg(short, long)]
+        since: Option<String>,
+        /// 结束日期 YYYY-MM-DD，默认今天
+        #[arg(short, long)]
+        until: Option<String>,
+        /// 输出 JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// 借款查询：个人未核销借款
+    #[command(alias = "loans")]
+    Jk {
+        /// 输出 JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// 外汇到款查询：学校收到的境外汇款，按汇款单位关键词（英文）
+    #[command(alias = "remittance")]
+    Wh {
+        /// 汇入单位关键词（英文，自动转大写）
+        keyword: String,
+        /// 要求包含全部字词（默认包含任意字词）
+        #[arg(long)]
+        all: bool,
+        /// 起始年月 YYYY-MM，默认去年 1 月
+        #[arg(long)]
+        since: Option<String>,
+        /// 结束年月 YYYY-MM，默认本月
+        #[arg(long)]
+        until: Option<String>,
+        /// 币种：USD/EUR/GBD/HKD/…/全部
+        #[arg(short, long, default_value = "全部")]
+        currency: String,
+        /// 最小金额
+        #[arg(long, default_value_t = 0.0)]
+        min: f64,
+        /// 最大金额，默认 min + 100000（门户要求区间不超过 10 万）
+        #[arg(long)]
+        max: Option<f64>,
+        /// 输出 JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// 外币汇率查询（中行折算价，每 100 外币）
+    #[command(alias = "fx")]
+    Hl {
+        /// 币种中文名：美元/欧元/英镑/日元/港币/…/全部
+        #[arg(short, long, default_value = "美元")]
+        currency: String,
+        /// 起始日期 YYYY-MM-DD，默认 30 天前
+        #[arg(short, long)]
+        since: Option<String>,
+        /// 结束日期 YYYY-MM-DD，默认今天
+        #[arg(short, long)]
+        until: Option<String>,
+        /// 输出 JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// 薪酬劳务查询（经办/项目负责人视角：从自己负责的项目发出的款项）
+    #[command(alias = "payroll")]
+    Xc {
+        /// 查询类别：0 学生发放 / 1 薪酬劳务 / 2 奖助学金 / 3 合同制工资 / 4 博士后工资 / 5 研究技术系列人员工资
+        #[arg(short, long, default_value = "1")]
+        kind: String,
+        /// 起始日期 YYYY-MM-DD，默认今年 1 月 1 日
+        #[arg(short, long)]
+        since: Option<String>,
+        /// 结束日期 YYYY-MM-DD，默认今天
+        #[arg(short, long)]
+        until: Option<String>,
+        /// 项目号
+        #[arg(short, long, default_value = "")]
+        project: String,
+        /// 输出 JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// 智能报销：报销单状态概览（草稿/审批中/待投递/待入账/退回/支付失败…）
+    #[command(alias = "reimburse")]
+    Bx {
+        /// 输出 JSON
+        #[arg(long)]
+        json: bool,
     },
 
     /// 手机令牌 (OTP) 管理
@@ -139,6 +268,53 @@ pub async fn dispatch(command: Commands) -> Result<()> {
         Commands::Logout => login::logout()?,
 
         Commands::Cj { year, from, to } => commands::cmd_reward(year, from, to).await?,
+        Commands::Menu { json } => commands::cmd_menu(json).await?,
+        Commands::Gz {
+            year,
+            from,
+            to,
+            kind,
+            list,
+            json,
+        } => commands::cmd_salary(year, from, to, kind, list, json).await?,
+        Commands::Rk { since, until, json } => commands::cmd_deposits(since, until, json).await?,
+        Commands::Jk { json } => commands::cmd_loans(json).await?,
+        Commands::Wh {
+            keyword,
+            all,
+            since,
+            until,
+            currency,
+            min,
+            max,
+            json,
+        } => {
+            commands::cmd_remittance(commands::RemittanceArgs {
+                keyword,
+                all,
+                since,
+                until,
+                currency,
+                min,
+                max,
+                json,
+            })
+            .await?
+        }
+        Commands::Hl {
+            currency,
+            since,
+            until,
+            json,
+        } => commands::cmd_fx(currency, since, until, json).await?,
+        Commands::Xc {
+            kind,
+            since,
+            until,
+            project,
+            json,
+        } => commands::cmd_payroll(kind, since, until, project, json).await?,
+        Commands::Bx { json } => commands::cmd_reimburse(json).await?,
 
         Commands::Otp { action } => {
             let store = pkuinfo_common::session::Store::new(login::APP_NAME)?;

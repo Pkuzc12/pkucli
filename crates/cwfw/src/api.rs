@@ -16,11 +16,7 @@
 //! 3. `commonQuery_doQuery.action?funcno=5746&projid=WF_CWBS&needcount=true`
 //!    → 取结果。返回体是非严格 JSON（未引用的 key）+ HTML 数字实体编码的中文。
 
-use crate::{
-    client::{CWFW_BASE, CWFW_PROJECT},
-    context::UserContext,
-    encrypt,
-};
+use crate::{client::CWFW_PROJECT, context::UserContext};
 use anyhow::{anyhow, Context, Result};
 use regex::Regex;
 use reqwest::Client;
@@ -36,9 +32,6 @@ pub const FUNC_REWARD_GRID: &str = "5746";
 /// 查询 "个人酬金查询" 时 d.funcno 和 d.dbcode 的取值
 pub const REWARD_FUNCNO: &str = "9-gz1";
 pub const REWARD_DBCODE: &str = "gz1";
-
-/// 所有接口都带这个 X-Requested-With
-const XHR: &str = "XMLHttpRequest";
 
 pub struct CwfwApi {
     client: Client,
@@ -207,46 +200,7 @@ impl CwfwApi {
     /// - 所有 key/value 都走 `picList.encode(picList.encode2(x))`
     /// - 不支持 URL query string（前端会把 query 移到 body 里，我们直接不传）
     async fn post_encrypted(&self, action: &str, extra_pairs: &[(&str, &str)]) -> Result<String> {
-        let url = format!("{CWFW_BASE}/WF_CWBS/{action}");
-
-        // 组装 (key, value) 列表：`a` 放最前（对齐前端行为），然后是调用方传入的字段
-        let mut pairs: Vec<(&str, &str)> = Vec::with_capacity(extra_pairs.len() + 1);
-        pairs.push(("a", self.uid.as_str()));
-        for pair in extra_pairs {
-            pairs.push(*pair);
-        }
-
-        let body = encrypt::encrypt_form(pairs.iter().copied());
-
-        let resp = self
-            .client
-            .post(&url)
-            .header("x-requested-with", XHR)
-            .header(
-                "content-type",
-                "application/x-www-form-urlencoded; charset=UTF-8",
-            )
-            .header("accept", "application/json, text/javascript, */*; q=0.01")
-            .header("origin", CWFW_BASE)
-            .header("referer", format!("{CWFW_BASE}/WF_CWBS/main.jsp"))
-            .body(body)
-            .send()
-            .await
-            .with_context(|| format!("{action} 请求失败"))?;
-
-        let status = resp.status();
-        let text = resp
-            .text()
-            .await
-            .with_context(|| format!("读取 {action} 响应失败"))?;
-
-        if !status.is_success() {
-            return Err(anyhow!(
-                "{action} HTTP {status}: {}",
-                text.chars().take(500).collect::<String>()
-            ));
-        }
-        Ok(text)
+        crate::wf::post_encrypted(&self.client, &self.uid, CWFW_PROJECT, action, extra_pairs).await
     }
 
     /// 高层 API：查询 `[year_from..=year_to]` 月份段的个人酬金记录。
@@ -290,9 +244,17 @@ pub struct DoQueryRow {
 impl DoQueryResp {
     /// 将服务端返回的 JS 对象字面量解析成强类型结构。
     pub fn parse(raw: &str) -> Result<Self> {
-        let json = normalize_js_object(raw);
+        let trimmed = raw.trim();
+        if trimmed.contains("SYS_ERROR") {
+            return Err(anyhow!("财务系统返回错误，请稍后再试"));
+        }
+        // 无数据时部分表格直接返回 `[]`
+        if trimmed.starts_with('[') {
+            return Ok(Self::default());
+        }
+        let json = normalize_js_object(trimmed);
         let mut resp: DoQueryResp =
-            serde_json::from_str(&json).with_context(|| format!("解析 doQuery 响应失败: {raw}"))?;
+            serde_json::from_str(&json).context("解析 doQuery 响应失败（会话可能已过期）")?;
         // 解码 HTML 数字实体
         for row in &mut resp.rows {
             for cell in &mut row.cell {
@@ -307,14 +269,14 @@ impl DoQueryResp {
 ///
 /// Wingsoft 返回的格式像 `{total:1,page:1,rows:[{id:"xxx",cell:[...]}]}`，
 /// 除了对象 key 没有双引号外其他都符合 JSON。
-fn normalize_js_object(raw: &str) -> String {
+pub(crate) fn normalize_js_object(raw: &str) -> String {
     // 匹配 `{` 或 `,` 后紧接的标识符 key，然后冒号
     let re = Regex::new(r#"([{,])\s*([A-Za-z_][A-Za-z0-9_]*)\s*:"#).expect("静态正则");
     re.replace_all(raw, r#"$1"$2":"#).into_owned()
 }
 
 /// 解码 `&#20167;` 形式的 HTML 数字字符引用
-fn decode_numeric_entities(s: &str) -> String {
+pub(crate) fn decode_numeric_entities(s: &str) -> String {
     let re = Regex::new(r"&#(\d+);").expect("静态正则");
     re.replace_all(s, |caps: &regex::Captures| {
         caps[1]
@@ -342,14 +304,14 @@ mod tests {
 
     #[test]
     fn parse_real_response() {
-        // 实际抓到的示例（截取 1 行）
-        let raw = r#"{total:1,page:1,records:1,rows:[{id:"5746_0",cell:["&#20167;&#23435;","8200908646","",""]}]}"#;
+        // 结构同实际响应（截取 1 行），内容为合成数据
+        let raw = r#"{total:1,page:1,records:1,rows:[{id:"5746_0",cell:["&#24352;&#19977;","8000000001","",""]}]}"#;
         let resp = DoQueryResp::parse(raw).expect("parse ok");
         assert_eq!(resp.total, 1);
         assert_eq!(resp.rows.len(), 1);
         // 解码中文
-        assert_eq!(resp.rows[0].cell[0], "仇宋");
-        assert_eq!(resp.rows[0].cell[1], "8200908646");
+        assert_eq!(resp.rows[0].cell[0], "张三");
+        assert_eq!(resp.rows[0].cell[1], "8000000001");
     }
 
     #[test]

@@ -2442,6 +2442,7 @@ dependencies = [
  "pku-claspider",
  "pku-course",
  "pku-cwfw",
+ "pku-cwpay",
  "pku-elective",
  "pku-portal",
  "pku-treehole",
@@ -2494,6 +2495,26 @@ dependencies = [
  "regex",
  "reqwest",
  "reqwest_cookie_store",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "pku-cwpay"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "anyhow",
+ "base64",
+ "chrono",
+ "clap",
+ "colored",
+ "pkuinfo-common",
+ "rand 0.8.5",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",

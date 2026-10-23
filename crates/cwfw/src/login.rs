@@ -228,7 +228,12 @@ pub fn logout() -> Result<()> {
 /// 属性值形如 `WINOPEN../WF_CWBS/main2.jsp?context=...&token=...&pId=WF_CWBS`。
 /// 这里去掉前缀 `WINOPEN`，返回相对 URL。
 fn extract_wf_cwbs_entry(html: &str) -> Option<String> {
-    let re = regex::Regex::new(r#"id="WF_CWBS"\s+url="([^"]+)""#).ok()?;
+    extract_entry(html, "WF_CWBS")
+}
+
+/// 同上，任意子系统（`WF_CWBS` / `WF_YBX` / `WF_XS` …）。
+pub(crate) fn extract_entry(html: &str, pid: &str) -> Option<String> {
+    let re = regex::Regex::new(&format!(r#"id="{}"\s+url="([^"]+)""#, regex::escape(pid))).ok()?;
     let caps = re.captures(html)?;
     let raw = caps.get(1)?.as_str();
     // 去掉 HTML 实体转义
@@ -236,6 +241,32 @@ fn extract_wf_cwbs_entry(html: &str) -> Option<String> {
     // 去掉 WINOPEN 前缀（客户端约定）
     let url = raw.strip_prefix("WINOPEN").unwrap_or(&raw);
     Some(url.to_string())
+}
+
+/// 进入另一个子系统（如智能报销 `WF_YBX`）：重新拉 home3.jsp 拿到带子系统 token 的入口，
+/// 再 GET 一次，建立该子系统的会话。依赖已登录的 WFManager 会话 cookie。
+pub async fn enter_subsystem(client: &reqwest::Client, pid: &str) -> Result<()> {
+    let home3 = format!("{CWFW_BASE}/WFManager/home3.jsp");
+    let resp = client
+        .get(&home3)
+        .send()
+        .await
+        .context("访问 home3.jsp 失败")?;
+    let body = resp.text().await?;
+    let entry = extract_entry(&body, pid).ok_or_else(|| {
+        anyhow!("home3.jsp 中未找到 {pid} 子系统入口，会话可能已过期，请重新 `cwfw login`")
+    })?;
+    let url = resolve_relative(&home3, &entry)?;
+    let resp = client
+        .get(&url)
+        .header("referer", &home3)
+        .send()
+        .await
+        .with_context(|| format!("访问 {pid} 子系统入口失败"))?;
+    if !resp.status().is_success() {
+        return Err(anyhow!("{pid} 子系统入口 HTTP {}", resp.status()));
+    }
+    Ok(())
 }
 
 /// 把相对 URL 拼接成绝对 URL。

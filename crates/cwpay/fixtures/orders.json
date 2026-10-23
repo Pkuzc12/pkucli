@@ -1,0 +1,14 @@
+{
+  "_note": "Shape of POST /pay/web/order/pageOrderlist (live 2026-10-23; fields trimmed to the ones read). amount/refundAmount in fen. Synthetic values.",
+  "messageCode": "0",
+  "message": "成功",
+  "data": {
+    "total": 4,
+    "records": [
+      { "id": "o-0", "orderNo": "26090100000000000000", "projectName": null, "productDesc": "校园卡就诊账户充值&", "amount": 10000, "createDate": "2026-09-01 15:41:37", "displayStatus": "103", "billNo": null, "billType": null },
+      { "id": "o-1", "orderNo": "26083100000000000001", "projectName": "浴卡充值", "amount": 5000, "createDate": "2026-08-31 20:52:33", "displayStatus": "103", "billNo": "E0001", "billType": "HANGXIN", "receiptMust": "YES" },
+      { "id": "o-2", "orderNo": "26082400000000000002", "projectName": "学费住宿费", "amount": 102000, "createDate": "2026-08-24 15:50:38", "displayStatus": "005", "billNo": null },
+      { "id": "o-3", "orderNo": "26090500000000000003", "projectName": "网费充值", "amount": 3000, "refundAmount": 1000, "createDate": "2026-09-05 10:00:00", "displayStatus": "107", "billNo": null }
+    ]
+  }
+}

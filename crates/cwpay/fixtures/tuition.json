@@ -1,0 +1,10 @@
+{
+  "_note": "Shape of pay/web/tuitionAndDorm/getTuitionAndDormList/<idserial>/<projectId> as read by chunk-34087c56 (academicYear, feeTypeName, shouldpay, paid in fen). Synthetic values.",
+  "messageCode": "0",
+  "message": "成功",
+  "data": [
+    { "academicYear": "2026-2027", "feeTypeName": "学费", "shouldpay": 500000, "paid": 0, "note": "" },
+    { "academicYear": "2026-2027", "feeTypeName": "住宿费", "shouldpay": 120000, "paid": 120000, "note": "" },
+    { "academicYear": "2025-2026", "feeTypeName": "学费", "shouldpay": 500000, "paid": 500000, "note": "<b>已缴</b>" }
+  ]
+}

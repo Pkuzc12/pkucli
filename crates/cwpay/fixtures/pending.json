@@ -1,0 +1,9 @@
+{
+  "_note": "Shape of GET pay/pay/waitingPay/getWaitingPayList/<schoolCode>/<idserial>/undefined as read by chunk-5dcd1bc5 (projectName, batchno, payamt, unpaidamt, payLimit; fen). Live account had an empty list; values synthetic.",
+  "messageCode": "0",
+  "message": "成功",
+  "data": [
+    { "projectId": "p1", "projectName": "教材费", "batchno": "2026秋季教材", "payamt": 32050, "unpaidamt": 32050, "payLimit": "-1" },
+    { "projectId": "p2", "projectName": "会议注册费", "batchno": "第一批", "payamt": 100000, "unpaidamt": 40000, "payLimit": 10000 }
+  ]
+}

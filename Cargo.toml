@@ -8,6 +8,7 @@ members = [
     "crates/campuscard",
     "crates/info-auth",
     "crates/cwfw",
+    "crates/cwpay",
     "crates/pku-cli",
     "crates/claspider",
     "crates/bdkj",

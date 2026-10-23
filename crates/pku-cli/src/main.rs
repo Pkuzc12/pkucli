@@ -14,6 +14,7 @@ const SUB_VERSIONS: &[(&str, &str, &str)] = &[
     ("claspider", "pku-claspider", pku_claspider::VERSION),
     ("bdkj", "pku-bdkj", pku_bdkj::VERSION),
     ("cwfw", "pku-cwfw", pku_cwfw::VERSION),
+    ("cwpay", "pku-cwpay", pku_cwpay::VERSION),
     ("portal", "pku-portal", pku_portal::VERSION),
 ];
 
@@ -86,6 +87,12 @@ enum Tools {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<OsString>,
     },
+    /// 收费平台 — 学费住宿费 / 待缴费 / 缴费订单（只读）
+    #[command(alias = "pay", disable_help_flag = true, disable_version_flag = true)]
+    Cwpay {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<OsString>,
+    },
     /// 校内信息门户 — 空闲教室 / 校历 / 网费
     #[command(disable_help_flag = true, disable_version_flag = true)]
     Portal {
@@ -151,6 +158,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Tools::Bdkj { args } => pku_bdkj::run_from(prepend_name("bdkj", &args)).await,
         Tools::Cwfw { args } => pku_cwfw::run_from(prepend_name("cwfw", &args)).await,
+        Tools::Cwpay { args } => pku_cwpay::run_from(prepend_name("cwpay", &args)).await,
         Tools::Portal { args } => pku_portal::run_from(prepend_name("portal", &args)).await,
         Tools::Version => {
             print_versions();

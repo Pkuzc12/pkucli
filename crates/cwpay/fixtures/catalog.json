@@ -1,0 +1,12 @@
+{
+  "_note": "Shape of POST pay/project/getAllProjectNoType {schoolCode} (live 2026-10-23, 164 rows; fields trimmed to the ones read). payamt in fen. Synthetic values.",
+  "messageCode": "0",
+  "message": "成功",
+  "data": [
+    { "id": "c-tuition", "projectName": "学费住宿费", "engName": "Tuition and accommodation", "proModelUrl": "tuitionAndDorm", "payamt": 0, "payLimit": 100000000, "status": "YES", "isSuspend": "YES", "suspendTip": "今日上午 8:30 起开展批量扣款，线上交费临时关闭。", "receiptMust": "NO" },
+    { "id": "c-bath", "projectName": "浴卡充值", "engName": "Bath card recharge", "proModelUrl": "bathRecharge", "payamt": null, "status": "YES", "isSuspend": "NO", "suspendTip": "旧的维护说明", "receiptMust": "YES" },
+    { "id": "c-car", "projectName": "校内居民车证缴费", "engName": "Resident parking permit", "proModelUrl": "common", "payamt": 54000, "amtFlag": "YES", "status": "YES", "isSuspend": null, "suspendTip": null, "receiptMust": "NO" },
+    { "id": "c-copy", "projectName": "<b>图书馆</b>复印打印费", "engName": "Library copying", "proModelUrl": "scene", "payamt": 0, "status": "YES", "isSuspend": "NO", "receiptMust": "NO" },
+    { "id": null, "projectName": "无效行" }
+  ]
+}
